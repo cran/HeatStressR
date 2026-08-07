@@ -1,0 +1,247 @@
+# HeatStressR NEWS
+
+## 2.2.1 — 2026-07-31
+
+* Examples completing within five seconds are now unwrapped and run as
+  ordinary examples.
+* Remaining executable long-running examples now use `\donttest{}` instead of
+  `\dontrun{}`.
+
+## 2.2.0 — 2026-07-27
+
+### Added
+
+* `heat_indices()` calculates multiple requested non-Liljegren indices from
+  aligned observations, reusing shared validation and vapour-pressure work.
+  `wbgt.Bernard` is available as an explicit opt-in when dew point is supplied.
+* Reproducible benchmarks cover optimized non-Liljegren paths across cool,
+  mixed, and hot inputs from 1 through 1,000,000 rows.
+
+### Changed
+
+* `wbgt.Bernard()` uses a vectorized, bracketed bisection solver in place of
+  one `stats::optimize()` call per valid row. Its public arguments and
+  preprocessing behavior are unchanged.
+* `hi()` evaluates the Rothfusz polynomial only for rows where it applies.
+  It now returns degrees Celsius, matching its Celsius input and the rest of
+  the package. To reproduce a previous Fahrenheit result, use
+  `hi(tas, hurs) * 1.8 + 32`.
+* Shared vapour-pressure work and small vector-allocation improvements reduce
+  repeated computation in closed-form indices. Existing exported function
+  names, formal arguments, positional calling conventions, and legacy
+  unequal-length behavior of `tashurs2vap.pres()` and `dewp2hurs()` are
+  retained.
+
+## 2.1.6 — 2026-07-23
+
+* Multi-worker `wbgt.Liljegren()` execution now uses a temporary
+  `foreach`/`doParallel` PSOCK backend. Each worker calculates solar geometry
+  and completes its WBGT shard end-to-end; the caller's existing `foreach`
+  backend is restored after the call.
+* Parallel benchmark runners now compare a fixed total row count across worker
+  counts. The worker sweep accepts `LILJEGREN_PARALLEL_ROWS` (default
+  1,000,000) rather than increasing rows per worker.
+* Reduced the benchmark suite to the maintained three-way pre-fork comparison
+  and fixed-workload internal-worker sweep, with refreshed result records.
+
+## 2.1.5 — 2026-07-23
+
+* `wbgt.Liljegren()` now defaults to `engine = "batch"`; select
+  `engine = "scalar"` for the prior reference execution path. Batch retains
+  automatic scalar fallback for unresolved rows.
+* `wbgt.Liljegren()` and `calZenith()` now accept `solar_time = "timestamp"`
+  or `"date_noon"`. The inherited `hour` argument remains a compatibility
+  alias.
+* Removed the fork-only `gmt_offset` option. Supply timezone-aware timestamps
+  or convert local observations to UTC before calculating solar geometry.
+* Removed the fork-only `averaging_period` option. HeatStressR evaluates the
+  supplied timestamp as an instantaneous observation; callers align
+  interval-mean or accumulated data before calculation.
+* `wbgt.Liljegren()` now accepts `direct_fraction`, the direct share of total
+  supplied shortwave radiation. It may be one value or a row-aligned vector
+  and defaults to 0.8.
+
+## 2.1.4 — 2026-07-22
+
+* Parallel batch calls with `diagnostics = FALSE` now return compact worker
+  summaries rather than row-level solver metadata. Final values and aggregate
+  numerical-failure warnings are unchanged, while PSOCK result transfer is
+  substantially reduced.
+* Liljegren performance runners now time the public default
+  `diagnostics = FALSE`; residual, fallback, and worker-parity validation is
+  performed separately outside timed sections.
+* Documented how to choose external `foreach` parallelism versus in-package
+  `workers`, including the requirement to avoid nested worker pools.
+* Updated documentation generation to roxygen2 8.0.0 and bound affected
+  roxygen blocks to their exported public functions.
+
+## 2.1.3 — 2026-07-22
+
+* `wbgt.Liljegren()` now caches timestamp-only solar-time terms and reuses
+  them across coordinate pairs, reducing repeated solar-geometry work while
+  retaining aligned vector results.
+* Refreshed the Liljegren coordinate benchmarks, including isolated
+  fixed/grouped/unique coordinate workloads and timestamp-cache E2E results.
+* The unique-coordinate Liljegren E2E benchmark now uses the full 129,024-row
+  fixture, matching the fixed- and grouped-coordinate workloads. Recorded
+  results and reproduction commands have been updated accordingly.
+
+## 2.1.2 — 2026-07-22
+
+* `wbgt.Liljegren()` now accepts scalar or row-aligned `lon` and `lat`.
+  Solar geometry groups rows by coordinate pair and reuses timestamp-only
+  terms for repeated instants before either scalar or batch heat-balance
+  solving begins.
+
+## 2.1.1 — 2026-07-21
+
+* Replaced benchmark-relative README links with permanent, versioned GitHub
+  URLs for CRAN compatibility.
+
+## 2.1.0 — 2026-07-21
+
+### Added
+
+* `wbgt.Liljegren()` batch execution accepts an explicit `workers` count.
+  Values above one use cross-platform PSOCK workers while retaining output,
+  warning, and diagnostic ordering. Worker count is user-selected within the
+  currently permitted worker limit; it is not automatically reduced based on
+  workload size except that it is capped at the number of input rows.
+* New internal parallel execution layer (`R/wbgt-parallel.R`) providing
+  `max_liljegren_workers()`, `validate_workers()`, `split_liljegren_chunks()`,
+  `solve_liljegren_batch_raw_chunk()`, and `solve_liljegren_parallel()`.
+* Added the initial multicore benchmark harnesses and recorded results on
+  Apple M2 Max. The benchmark suite was subsequently consolidated in 2.1.6.
+* `DESCRIPTION` now lists `parallel` as an explicit import.
+
+### CRAN preparation
+
+* Standardised licence metadata and package authorship.
+* Added package and Liljegren-model citations.
+* Added runnable Liljegren examples and expanded installed documentation.
+* Clarified that HeatStressR is an R implementation of the Liljegren method,
+  not a claim of improvement over the original Liljegren program.
+* Made worker-limit detection respect CRAN check core limits.
+* Added CRAN submission notes and related regression tests.
+
+### Changed
+
+* `wbgt.Liljegren()` with `engine = "batch"` automatically falls back to
+  multi-worker PSOCK parallel execution when `workers > 1`, splitting rows
+  across chunks and combining results with preserved diagnostic attributes.
+* Worker count validation enforces finite integer input and caps at the
+  currently permitted worker count; no workload-size heuristic is applied
+  beyond the row-count cap.
+
+### Fixed
+
+* Batch worker count is now capped at the detected logical CPU limit to
+  prevent oversubscription on multi-socket or hyperthreaded systems.
+
+## 2.0.0 — 2026-07-21
+
+This is the first release of the independently maintained fork under the
+HeatStressR name. It is not an upstream release.
+
+### Breaking changes
+
+* The package has been renamed from `HeatStress` to `HeatStressR`. Install it
+  from `zyf0717/HeatStressR` and replace `library(HeatStress)` with
+  `library(HeatStressR)`. Exported function names and their legacy argument
+  order are retained.
+* The calculation runtime now requires R 3.4 or later. Running the test suite
+  requires R 4.1 or later because the current `testthat` dependency requires
+  that version; CI pins an R 4.1 job in addition to rolling release jobs.
+* `calZenith()` now incorporates longitude and the equation of time. Results
+  for the same UTC timestamp therefore vary by longitude, as required for
+  correct solar geometry.
+* Liljegren defaults now match the original C sensor constants:
+  `surface_albedo = 0.45`, `globe_diameter = 0.0508`, and
+  `min_wind_speed = 0.13`. Existing calculations can reproduce the former
+  constants by supplying `0.4`, `0.05`, and `0.1`, respectively.
+* Numeric Liljegren results from the inherited R package may change because of
+  solar-geometry changes, C-aligned defaults, adaptive root finding, and
+  residual validation. Differences from the original Liljegren program and
+  other implementations are expected when assumptions are not matched.
+
+### Added
+
+* `wbgt.Liljegren()` accepts scalar or row-aligned `pressure` in hPa.
+* `calZenith()` and `wbgt.Liljegren()` accept `gmt_offset` (`LST - GMT`) and
+  `averaging_period`. Together they reproduce the original C convention of
+  evaluating solar position at the local-standard-time interval midpoint.
+* `calZenith()` and `wbgt.Liljegren()` accept `POSIXct`/`POSIXlt` instants and
+  offset-bearing ISO 8601 datetime strings, normalizing them to UTC.
+* `surface_albedo`, `globe_diameter`, and `min_wind_speed` are configurable in
+  `wbgt.Liljegren()`.
+* `diagnostics = TRUE` reports row-aligned input status, root convergence,
+  residuals, brackets, failure reasons, and batch-fallback metadata.
+* An explicit `engine = "batch"` path provides safeguarded vector root solving
+  with scalar fallback; the scalar R engine remains the default.
+* Reproducible benchmark harnesses and recorded end-to-end results.
+
+### Changed
+
+* Globe roots are located using an adaptively bracketed fourth-power energy
+  residual; natural wet-bulb roots use adaptive bracketing and residual
+  validation.
+* Root-location, residual-acceptance, and dew-point-policy tolerances are
+  independent controls while preserving legacy `tolerance` defaults.
+* Missing, invalid, and partially solved rows retain row alignment. Complete
+  WBGT is `NA` when either component fails, while an independently validated
+  component is retained.
+* Solar forcing is zeroed when the calculated sun elevation is non-positive.
+
+### Fixed
+
+* Longitude was previously validated but not used by `calZenith()`.
+* Removed the former fixed globe-temperature clipping behavior.
+* Batch and scalar engines now validate aligned output positions and final
+  residuals consistently.
+
+## Historical HeatStress lineage
+
+The entries below describe inherited [HeatStress](https://github.com/anacv/HeatStress)
+release history. They are retained for upgrade context and do not imply ongoing
+maintenance by the original project.
+
+### 1.0.8.1
+
+* Fixed the heat-index implementation.
+
+### 1.0.8
+
+* Updated the heat-index equation and documentation.
+* Validated relative humidity inputs and added dew-point calculation support.
+
+### 1.0.7
+
+* Updated documentation.
+
+### 1.0.6
+
+* Corrected an assertion statement.
+
+### 1.0.5
+
+* Reorganized Liljegren wrapper assertions for performance.
+
+### 1.0.4
+
+* Added additional heat-stress indices.
+
+### 1.0.3
+
+* Corrected custom-tolerance handling and the globe-temperature search
+  interval in `wbgt.Liljegren()`.
+
+### 1.0.2
+
+* Added a third dew-point policy for `wbgt.Bernard()` and
+  `wbgt.Liljegren()`.
+* Corrected hourly zenith handling for `POSIXlt` inputs.
+
+### 1.0.1
+
+* Added an option to enforce `tas >= dewp`.
+* Improved WBGT wrapper performance and set the default tolerance to `1e-4`.
