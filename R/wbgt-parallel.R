@@ -112,65 +112,114 @@ solve_liljegren_batch <- function(tas, dewp, relh, Pair, wind, radiation, zenith
   solve_liljegren_batch_chunk(payload, controls)
 }
 
-solve_liljegren_batch_raw_chunk <- function(chunk, controls) {
-  n <- length(chunk$tas)
-  Pair <- rep(chunk$pressure, length.out = n)
-  tas <- chunk$tas
-  dewp <- chunk$dewp
-  wind <- chunk$wind
-  radiation <- chunk$radiation
-  zenith <- chunk$zenith
+preprocess_liljegren_inputs <- function(tas, dewp, wind, radiation, pressure,
+                                        zenith, noNAs, swap,
+                                        dewpoint_tolerance,
+                                        diagnostics = FALSE) {
+  n <- length(tas)
+  Pair <- rep(pressure, length.out = n)
 
+  if (diagnostics) {
+    wind_clamped <- rep(FALSE, n)
+    wind_clamped[which(wind < 0)] <- TRUE
+    radiation_clamped <- rep(FALSE, n)
+    radiation_clamped[which(radiation < 0)] <- TRUE
+  }
   radiation[radiation < 0] <- 0
   wind[wind < 0] <- 0
   solar_geometry_mismatch <- !is.na(radiation) & !is.na(zenith) &
     radiation > 15 & zenith > 1.54
-  radiation[!is.na(zenith) & cos(zenith) <= 0] <- 0
+  below_horizon <- !is.na(zenith) & cos(zenith) <= 0
+  if (diagnostics) {
+    radiation_zeroed_below_horizon <- rep(FALSE, n)
+    radiation_zeroed_below_horizon[
+      which(below_horizon & !is.na(radiation) & radiation != 0)
+    ] <- TRUE
+  }
+  radiation[below_horizon] <- 0
 
   input_valid <- !is.na(tas + dewp + wind + radiation + Pair) & !is.na(zenith)
   input_status <- rep("attempted", n)
-  input_status[is.na(tas) | is.na(dewp) | is.na(wind) | is.na(radiation) | is.na(Pair)] <-
-    "missing_input"
+  input_status[is.na(tas) | is.na(dewp) | is.na(wind) | is.na(radiation) |
+    is.na(Pair)] <- "missing_input"
   input_status[input_status == "attempted" & is.na(zenith)] <- "missing_date"
 
-  if (controls$noNAs && controls$swap) {
+  if (diagnostics) dewpoint_adjusted <- rep(FALSE, n)
+  if (noNAs && swap) {
+    if (diagnostics) dewpoint_adjusted[which(dewp > tas)] <- TRUE
     tas_tmp <- pmax(tas, dewp)
     dewp <- pmin(tas, dewp)
     tas <- tas_tmp
-  } else if (controls$noNAs) {
-    dewp[(dewp - tas) > controls$dewpoint_tolerance] <-
-      tas[(dewp - tas) > controls$dewpoint_tolerance]
+  } else if (noNAs) {
+    invalid_dewp <- which((dewp - tas) > dewpoint_tolerance)
+    if (diagnostics) dewpoint_adjusted[invalid_dewp] <- TRUE
+    dewp[invalid_dewp] <- tas[invalid_dewp]
   } else {
     input_valid <- input_valid & tas >= dewp
     input_status[input_status == "attempted" & !is.na(tas) & !is.na(dewp) &
       dewp > tas] <- "invalid_dewpoint"
   }
-  relh <- dewp2hurs(tas, dewp)
-  valid_idx <- which(input_valid)
+
+  result <- list(
+    tas = tas, dewp = dewp, wind = wind, radiation = radiation,
+    Pair = Pair, zenith = zenith, relh = dewp2hurs(tas, dewp),
+    input_valid = input_valid, input_status = input_status,
+    solar_geometry_mismatch = solar_geometry_mismatch,
+    valid_idx = which(input_valid)
+  )
+  if (diagnostics) {
+    result$wind_clamped <- wind_clamped
+    result$radiation_clamped <- radiation_clamped
+    result$radiation_zeroed_below_horizon <- radiation_zeroed_below_horizon
+    result$dewpoint_adjusted <- dewpoint_adjusted
+  }
+  result
+}
+
+solve_liljegren_batch_raw_chunk <- function(chunk, controls, diagnostics = FALSE) {
+  n <- length(chunk$tas)
+  preprocessed <- preprocess_liljegren_inputs(
+    chunk$tas, chunk$dewp, chunk$wind, chunk$radiation, chunk$pressure,
+    chunk$zenith, controls$noNAs, controls$swap,
+    controls$dewpoint_tolerance, diagnostics
+  )
   Tg <- rep(NA_real_, n)
   Tnwb <- rep(NA_real_, n)
   Tg.batch <- NULL
   Tnwb.batch <- NULL
-  if (length(valid_idx)) {
+  if (length(preprocessed$valid_idx)) {
     chunk_controls <- controls
-    chunk_controls$prop_direct <- chunk$direct_fraction[valid_idx]
+    chunk_controls$prop_direct <- chunk$direct_fraction[preprocessed$valid_idx]
     solved <- solve_liljegren_batch_chunk(list(
-      tas = tas[valid_idx], dewp = dewp[valid_idx], relh = relh[valid_idx],
-      Pair = Pair[valid_idx], wind = wind[valid_idx], radiation = radiation[valid_idx],
-      zenith = zenith[valid_idx]
+      tas = preprocessed$tas[preprocessed$valid_idx],
+      dewp = preprocessed$dewp[preprocessed$valid_idx],
+      relh = preprocessed$relh[preprocessed$valid_idx],
+      Pair = preprocessed$Pair[preprocessed$valid_idx],
+      wind = preprocessed$wind[preprocessed$valid_idx],
+      radiation = preprocessed$radiation[preprocessed$valid_idx],
+      zenith = preprocessed$zenith[preprocessed$valid_idx]
     ), chunk_controls)
     Tg.batch <- solved$Tg
     Tnwb.batch <- solved$Tnwb
-    Tg[valid_idx] <- Tg.batch
-    Tnwb[valid_idx] <- Tnwb.batch
+    Tg[preprocessed$valid_idx] <- Tg.batch
+    Tnwb[preprocessed$valid_idx] <- Tnwb.batch
   }
-  list(
+  result <- list(
     n = n, data = ifelse(is.na(Tg) | is.na(Tnwb), NA_real_,
-      0.7 * Tnwb + 0.2 * Tg + 0.1 * tas), Tg = Tg, Tnwb = Tnwb,
-    input_valid = input_valid,
-    input_status = input_status, solar_geometry_mismatch = solar_geometry_mismatch,
-    valid_idx = valid_idx, Tg.batch = Tg.batch, Tnwb.batch = Tnwb.batch
+      0.7 * Tnwb + 0.2 * Tg + 0.1 * preprocessed$tas), Tg = Tg, Tnwb = Tnwb,
+    input_valid = preprocessed$input_valid,
+    input_status = preprocessed$input_status,
+    solar_geometry_mismatch = preprocessed$solar_geometry_mismatch,
+    valid_idx = preprocessed$valid_idx, Tg.batch = Tg.batch, Tnwb.batch = Tnwb.batch
   )
+  if (diagnostics) {
+    result$wind_clamped <- preprocessed$wind_clamped
+    result$radiation_clamped <- preprocessed$radiation_clamped
+    result$radiation_zeroed_below_horizon <-
+      preprocessed$radiation_zeroed_below_horizon
+    result$dewpoint_adjusted <- preprocessed$dewpoint_adjusted
+  }
+  result
 }
 
 liljegren_failure_count_names <- c(
@@ -261,31 +310,8 @@ solve_liljegren_parallel_worker <- function(chunk, controls, diagnostics) {
   chunk$zenith <- calculate_liljegren_zenith(
     chunk$dates, chunk$lon, chunk$lat, hour = chunk$hour
   )
-  result <- solve_liljegren_batch_raw_chunk(chunk, controls)
+  result <- solve_liljegren_batch_raw_chunk(chunk, controls, diagnostics)
   if (diagnostics) result else compact_liljegren_chunk_result(result)
-}
-
-capture_foreach_backend <- function() {
-  globals <- utils::getFromNamespace(".foreachGlobals", "foreach")
-  names <- c("fun", "data", "info")
-  present <- vapply(names, exists, logical(1), envir = globals, inherits = FALSE)
-  list(
-    globals = globals,
-    present = present,
-    values = stats::setNames(lapply(names[present], get, envir = globals,
-      inherits = FALSE), names[present])
-  )
-}
-
-restore_foreach_backend <- function(backend) {
-  names <- names(backend$present)
-  for (name in names) {
-    if (backend$present[[name]]) {
-      assign(name, backend$values[[name]], envir = backend$globals)
-    } else if (exists(name, envir = backend$globals, inherits = FALSE)) {
-      rm(list = name, envir = backend$globals)
-    }
-  }
 }
 
 solve_liljegren_parallel <- function(tas, dewp, wind, radiation, dates, lon, lat,
@@ -303,17 +329,12 @@ solve_liljegren_parallel <- function(tas, dewp, wind, radiation, dates, lon, lat
     direct_fraction = direct_fraction[index],
     dates = dates[index], lon = lon[index], lat = lat[index], hour = hour
   ))
-  backend <- capture_foreach_backend()
-  on.exit(restore_foreach_backend(backend), add = TRUE)
   cluster <- parallel::makePSOCKcluster(effective_workers)
   on.exit(parallel::stopCluster(cluster), add = TRUE)
-  doParallel::registerDoParallel(cluster)
-  chunk <- NULL
-  chunk_results <- foreach::`%dopar%`(
-    foreach::foreach(chunk = chunks, .packages = "HeatStressR", .inorder = TRUE),
-    utils::getFromNamespace("solve_liljegren_parallel_worker", "HeatStressR")(
-      chunk, controls, diagnostics
-    )
+  invisible(parallel::clusterCall(cluster, base::loadNamespace, "HeatStressR"))
+  worker <- utils::getFromNamespace("solve_liljegren_parallel_worker", "HeatStressR")
+  chunk_results <- parallel::parLapply(
+    cluster, chunks, worker, controls = controls, diagnostics = diagnostics
   )
   if (!diagnostics) {
     return(list(
@@ -339,6 +360,12 @@ solve_liljegren_parallel <- function(tas, dewp, wind, radiation, dates, lon, lat
     input_status = combine_parallel_chunk_field(chunk_results, "input_status"),
     solar_geometry_mismatch = combine_parallel_chunk_field(chunk_results,
       "solar_geometry_mismatch"),
+    wind_clamped = combine_parallel_chunk_field(chunk_results, "wind_clamped"),
+    radiation_clamped = combine_parallel_chunk_field(chunk_results, "radiation_clamped"),
+    radiation_zeroed_below_horizon = combine_parallel_chunk_field(
+      chunk_results, "radiation_zeroed_below_horizon"),
+    dewpoint_adjusted = combine_parallel_chunk_field(chunk_results,
+      "dewpoint_adjusted"),
     valid_idx = valid_idx,
     Tg.batch = if (length(tg_chunks)) combine_batch_solver_results(tg_chunks) else numeric(),
     Tnwb.batch = if (length(tnwb_chunks)) combine_batch_solver_results(tnwb_chunks) else numeric(),

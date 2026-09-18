@@ -35,7 +35,8 @@ wbgt.Liljegren(
 
 \item{dewp}{vector of dewpoint temperature in degC.}
 
-\item{wind}{vector of wind speed in m/s.}
+\item{wind}{vector of wind speed at 2 m above ground in m/s. Wind-height
+adjustment is not performed internally.}
 
 \item{radiation}{vector of solar shortwave downwelling radiation in W/m2.}
 
@@ -66,7 +67,8 @@ acceptance \code{tolerance}, and dewpoint validation \code{tolerance}.}
 vectorized safeguarded root solver with automatic scalar fallback for
 unresolved rows. \code{"scalar"} selects the reference R implementation.}
 
-\item{diagnostics}{logical; return solver metadata in addition to the usual result.}
+\item{diagnostics}{logical; return solver and preprocessing metadata in
+addition to the usual result.}
 
 \item{root_tolerance}{numerical precision (K) used to locate heat-balance roots.}
 
@@ -88,7 +90,7 @@ matching the original Liljegren C implementation.}
 \item{min_wind_speed}{lower bound applied to wind speed in m/s. Defaults to
 0.13 m/s, matching the original Liljegren C implementation.}
 
-\item{workers}{number of \code{foreach}/PSOCK worker processes for
+\item{workers}{number of PSOCK worker processes for
 \code{engine = "batch"}.
 Must be an integer from 1 through the currently permitted logical CPU count.
 The default of 1 preserves sequential batch execution; values greater than 1
@@ -127,16 +129,16 @@ translated to R by Ana Casanueva. HeatStressR is an independently maintained
 fork and is not affiliated with the original project or its authors.
 
 The batch engine is the default implementation. It uses explicitly requested
-\code{foreach}/\code{doParallel} PSOCK workers when \code{workers > 1}; no
+base R PSOCK workers when \code{workers > 1}; no
 workers are created by default.
 The scalar engine remains available as a reference implementation. Pressure, surface
 albedo, globe diameter, minimum wind speed, and direct-radiation fraction
 are configurable. Solar
 positions use the supplied timestamp, latitude, longitude, and the equation
 of time. Radiation is zeroed when the computed
-solar elevation is not positive. When coordinates are row-aligned, solar
-geometry groups rows by longitude-latitude pair and reuses timestamp-only
-solar terms for repeated instants.
+solar elevation is not positive. Solar geometry deduplicates timestamp-only
+terms for repeated instants, then applies one vectorized row-aligned
+longitude/latitude projection.
 The function evaluates aligned instantaneous meteorological states; interval
 alignment, timestamp conversion, wind-height adjustment, and radiation
 quality control remain caller responsibilities. When direct and diffuse
@@ -158,6 +160,9 @@ both validated component roots.
 With \code{diagnostics = TRUE}, all row-level diagnostic vectors match the
 input length. \code{input_status} describes filtering, while per-solver
 \code{converged} and \code{fallback_reason} describe numerical solving.
+Preprocessing is recorded by \code{wind_clamped},
+\code{radiation_clamped}, \code{radiation_zeroed_below_horizon}, and
+\code{dewpoint_adjusted}.
 \code{workers} reports the effective worker count and
 \code{requested_workers} reports the supplied count.
 

@@ -18,20 +18,10 @@ calculate_liljegren_zenith <- function(dates, lon, lat, hour) {
   unique_date_index <- !duplicated(date_key)
   date_index <- match(date_key, date_key[unique_date_index])
   terms <- calculate_solar_time_terms(dates[unique_date_index], hour)
-  coordinate_id <- paste(sprintf("%a", coordinates$lon),
-    sprintf("%a", coordinates$lat), sep = "\r")
-  groups <- split(seq_len(n), match(coordinate_id, unique(coordinate_id)))
-  zenith <- rep(NA_real_, n)
-
-  for (index in groups) {
-    term_index <- date_index[index]
-    zenith[index] <- degToRad(calculate_zenith_from_solar_terms(
-      terms$utc_minutes[term_index], terms$equation_of_time[term_index],
-      terms$declination[term_index], coordinates$lon[index[1L]],
-      coordinates$lat[index[1L]]
-    ))
-  }
-  zenith
+  degToRad(calculate_zenith_from_solar_terms(
+    terms$utc_minutes[date_index], terms$equation_of_time[date_index],
+    terms$declination[date_index], coordinates$lon, coordinates$lat
+  ))
 }
 
 format_liljegren_failure_counts <- function(counts) sprintf(
@@ -49,7 +39,8 @@ liljegren_failure_counts <- function(reasons, failed) {
 #' 
 #' @param tas vector of temperature in degC.
 #' @param dewp vector of dewpoint temperature in degC.
-#' @param wind vector of wind speed in m/s.
+#' @param wind vector of wind speed at 2 m above ground in m/s. Wind-height
+#' adjustment is not performed internally.
 #' @param radiation vector of solar shortwave downwelling radiation in W/m2.
 #' @param dates vector of dates, \code{POSIXct}/\code{POSIXlt} instants, or ISO 8601
 #' datetime strings. Use timezone-aware \code{POSIXct} for high-throughput
@@ -70,8 +61,9 @@ liljegren_failure_counts <- function(reasons, failed) {
 #' @param engine Numerical solver engine. \code{"batch"} is the default
 #' vectorized safeguarded root solver with automatic scalar fallback for
 #' unresolved rows. \code{"scalar"} selects the reference R implementation.
-#' @param diagnostics logical; return solver metadata in addition to the usual result.
-#' @param workers number of \code{foreach}/PSOCK worker processes for
+#' @param diagnostics logical; return solver and preprocessing metadata in
+#' addition to the usual result.
+#' @param workers number of PSOCK worker processes for
 #' \code{engine = "batch"}.
 #' Must be an integer from 1 through the currently permitted logical CPU count.
 #' The default of 1 preserves sequential batch execution; values greater than 1
@@ -115,16 +107,16 @@ liljegren_failure_counts <- function(reasons, failed) {
 #' fork and is not affiliated with the original project or its authors.
 #'
 #' The batch engine is the default implementation. It uses explicitly requested
-#' \code{foreach}/\code{doParallel} PSOCK workers when \code{workers > 1}; no
+#' base R PSOCK workers when \code{workers > 1}; no
 #' workers are created by default.
 #' The scalar engine remains available as a reference implementation. Pressure, surface
 #' albedo, globe diameter, minimum wind speed, and direct-radiation fraction
 #' are configurable. Solar
 #' positions use the supplied timestamp, latitude, longitude, and the equation
 #' of time. Radiation is zeroed when the computed
-#' solar elevation is not positive. When coordinates are row-aligned, solar
-#' geometry groups rows by longitude-latitude pair and reuses timestamp-only
-#' solar terms for repeated instants.
+#' solar elevation is not positive. Solar geometry deduplicates timestamp-only
+#' terms for repeated instants, then applies one vectorized row-aligned
+#' longitude/latitude projection.
 #' The function evaluates aligned instantaneous meteorological states; interval
 #' alignment, timestamp conversion, wind-height adjustment, and radiation
 #' quality control remain caller responsibilities. When direct and diffuse
@@ -146,6 +138,9 @@ liljegren_failure_counts <- function(reasons, failed) {
 #' With \code{diagnostics = TRUE}, all row-level diagnostic vectors match the
 #' input length. \code{input_status} describes filtering, while per-solver
 #' \code{converged} and \code{fallback_reason} describe numerical solving.
+#' Preprocessing is recorded by \code{wind_clamped},
+#' \code{radiation_clamped}, \code{radiation_zeroed_below_horizon}, and
+#' \code{dewpoint_adjusted}.
 #' \code{workers} reports the effective worker count and
 #' \code{requested_workers} reports the supplied count.
 #'
@@ -271,6 +266,10 @@ wbgt.Liljegren <- function(tas, dewp, wind, radiation, dates, lon, lat, toleranc
       input_valid <- parallel_result$input_valid
       input_status <- parallel_result$input_status
       solar_geometry_mismatch <- parallel_result$solar_geometry_mismatch
+      wind_clamped <- parallel_result$wind_clamped
+      radiation_clamped <- parallel_result$radiation_clamped
+      radiation_zeroed_below_horizon <- parallel_result$radiation_zeroed_below_horizon
+      dewpoint_adjusted <- parallel_result$dewpoint_adjusted
       valid_idx <- parallel_result$valid_idx
       Tg.batch <- parallel_result$Tg.batch
       Tnwb.batch <- parallel_result$Tnwb.batch
@@ -288,50 +287,36 @@ wbgt.Liljegren <- function(tas, dewp, wind, radiation, dates, lon, lat, toleranc
       parallel_failure_summary <- parallel_result$failure_summary
     }
   } else {
-  # Solar geometry depends only on aligned timestamps and coordinates. Reuse
-  # timestamp-only terms and calculate each coordinate group before solving.
+  # Reuse timestamp-only terms, then project row-aligned coordinates in one
+  # vectorized solar-geometry call before solving.
   zenith_rad <- calculate_liljegren_zenith(dates, lon, lat, hour = hour)
-  Pair <- rep(pressure, length.out = ndates)
+  preprocessed <- preprocess_liljegren_inputs(
+    tas, dewp, wind, radiation, pressure, zenith_rad,
+    noNAs, swap, dewpoint_tolerance, diagnostics
+  )
+  tas <- preprocessed$tas
+  dewp <- preprocessed$dewp
+  wind <- preprocessed$wind
+  radiation <- preprocessed$radiation
+  Pair <- preprocessed$Pair
+  relh <- preprocessed$relh
+  input_valid <- preprocessed$input_valid
+  input_status <- preprocessed$input_status
+  solar_geometry_mismatch <- preprocessed$solar_geometry_mismatch
+  valid_idx <- preprocessed$valid_idx
+  if (diagnostics) {
+    wind_clamped <- preprocessed$wind_clamped
+    radiation_clamped <- preprocessed$radiation_clamped
+    radiation_zeroed_below_horizon <- preprocessed$radiation_zeroed_below_horizon
+    dewpoint_adjusted <- preprocessed$dewpoint_adjusted
+  }
   MinWindSpeed <- min_wind_speed
   Tnwb <- rep(NA_real_, ndates)
   Tg <- rep(NA_real_, ndates)
 
-  # Do not allow negative wind and radiation
-  radiation[radiation<0] <- 0
-  wind[wind<0] <- 0
-  solar_geometry_mismatch <- !is.na(radiation) & !is.na(zenith_rad) &
-    radiation > 15 & zenith_rad > 1.54
-  radiation[!is.na(zenith_rad) & cos(zenith_rad) <= 0] <- 0
-  
-  # Filter data to calculate the WBGT with optimization function
-  xmask <- !is.na(tas + dewp + wind + radiation + Pair) & !is.na(zenith_rad)
-  input_status <- rep("attempted", ndates)
-  input_status[is.na(tas) | is.na(dewp) | is.na(wind) | is.na(radiation) | is.na(Pair)] <-
-    "missing_input"
-  input_status[input_status == "attempted" & is.na(zenith_rad)] <- "missing_date"
-  
-  if (noNAs & swap){
-    tastmp <- pmax(tas, dewp)
-    dewp <- pmin(tas, dewp)
-    tas <- tastmp
-  } else if(noNAs & !swap){
-    noway_idx <- which((dewp - tas) > dewpoint_tolerance)
-    dewp[noway_idx] <- tas[noway_idx]
-  } else if(!noNAs){
-    xmask <- xmask & tas >= dewp
-    input_status[input_status == "attempted" & !is.na(tas) & !is.na(dewp) &
-      dewp > tas] <- "invalid_dewpoint"
-  }
-  input_valid <- xmask
- 
-  # Calculate relative humidity from air temperature and dew point temperature
-  relh <- dewp2hurs(tas,dewp) # input in degC, output in %
-
-  
   # **************************************
   # *** Calculation of the Tg and Tnwb ***
   # **************************************
-  valid_idx <- which(xmask)
   Tg.converged <- rep(NA, ndates)
   Tnwb.converged <- rep(NA, ndates)
   Tg.evaluations <- rep(NA_integer_, ndates)
@@ -443,6 +428,11 @@ wbgt.Liljegren <- function(tas, dewp, wind, radiation, dates, lon, lat, toleranc
     wbgt$diagnostics$complete_wbgt <- wbgt$diagnostics$Tg$converged &
       wbgt$diagnostics$Tnwb$converged
     wbgt$diagnostics$solar_geometry_mismatch <- solar_geometry_mismatch
+    wbgt$diagnostics$wind_clamped <- wind_clamped
+    wbgt$diagnostics$radiation_clamped <- radiation_clamped
+    wbgt$diagnostics$radiation_zeroed_below_horizon <-
+      radiation_zeroed_below_horizon
+    wbgt$diagnostics$dewpoint_adjusted <- dewpoint_adjusted
   }
   wbgt
 }

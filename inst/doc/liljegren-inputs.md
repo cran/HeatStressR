@@ -8,6 +8,10 @@ Return to the [package README](https://github.com/zyf0717/HeatStressR#readme).
 the default is 1010 hPa. Other defaults are `surface_albedo = 0.45`,
 `globe_diameter = 0.0508`, and `min_wind_speed = 0.13`.
 
+`wind` is wind speed at 2 m above ground in m/s. HeatStressR does not perform
+wind-height adjustment; adjust measurements from other reference heights
+before calling `wbgt.Liljegren()`.
+
 `radiation` is total downwelling shortwave radiation. `direct_fraction`
 specifies the direct share, `direct / (direct + diffuse)`, and accepts one
 value or a row-aligned vector. It defaults to `0.8`; retain that default when
@@ -40,7 +44,7 @@ meteorological pre-processing. The caller is responsible for:
 
 - choosing the representative instant for interval-mean or accumulated data;
 - converting timestamps to UTC or constructing timezone-aware `POSIXct`;
-- adjusting wind to the model reference height; and
+- adjusting wind to 2 m above ground; and
 - deriving and quality-controlling shortwave radiation from cloud cover or
   other source data.
 
@@ -68,7 +72,9 @@ Use `diagnostics = TRUE` to investigate invalid inputs or solver failures.
 Diagnostic vectors match input length, and `input_status` separates filtered
 rows from heat-balance solver failures. Diagnostics are disabled by default so
 parallel calls return compact chunk summaries rather than row-level diagnostic
-metadata from every worker.
+metadata from every worker. `wind_clamped`, `radiation_clamped`,
+`radiation_zeroed_below_horizon`, and `dewpoint_adjusted` identify row-level
+preprocessing changes without altering `input_status`.
 
 Relaxing `residual_tolerance` only accepts an already located finite root; it
 does not recover unbracketed or non-finite rows. WBGT is `NA` unless both `Tg`

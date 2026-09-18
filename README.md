@@ -1,6 +1,7 @@
 # HeatStressR
 
 [![R-CMD-check](https://github.com/zyf0717/HeatStressR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/zyf0717/HeatStressR/actions/workflows/R-CMD-check.yaml)
+[![CRAN status](https://www.r-pkg.org/badges/version/HeatStressR)](https://CRAN.R-project.org/package=HeatStressR)
 [![Release](https://img.shields.io/github/v/release/zyf0717/HeatStressR?display_name=tag&sort=semver)](https://github.com/zyf0717/HeatStressR/releases)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://github.com/zyf0717/HeatStressR/blob/master/LICENSE)
 
@@ -45,7 +46,18 @@ compiled-code dependencies or changing their existing input signatures.
 HeatStressR requires R 3.4 or later. The test suite is supported from R 4.1.
 
 ```r
+install.packages("HeatStressR")
+```
+
+### Development version
+
+```r
 remotes::install_github("zyf0717/HeatStressR")
+```
+
+After installation:
+
+```r
 library(HeatStressR)
 indexShow()
 ```
@@ -66,8 +78,9 @@ fraction—use the generated R help for the relevant function:
 ## Quick start: Liljegren WBGT
 
 `wbgt.Liljegren()` expects aligned vectors for air temperature (`tas`, °C),
-dewpoint (`dewp`, °C), wind speed (`wind`, m/s), total downwelling shortwave
-radiation (`radiation`, W/m²), and timestamps (`dates`). Longitude (`lon`,
+dewpoint (`dewp`, °C), wind speed at 2 m above ground (`wind`, m/s), total
+downwelling shortwave radiation (`radiation`, W/m²), and timestamps (`dates`).
+Wind-height adjustment is not performed internally. Longitude (`lon`,
 degrees), latitude (`lat`, degrees), and pressure (`pressure`, hPa) may each be
 a scalar or row-aligned vector.
 
@@ -116,11 +129,12 @@ See the generated R help for the complete parameter reference:
 Use `heat_indices()` when several closed-form indices are needed for the same
 observations. It validates the shared temperature and humidity vectors once and
 calculates vapour pressure once for `swbgt`, `apparentTemp`, and `humidex`.
-The default selection requires `wind`; request a subset when wind is not
-available.
+The default selects every supported closed-form index: five columns without
+`wind`, or all seven when `wind` is supplied.
 
 ```r
 indices <- heat_indices(tas, hurs, wind = wind)
+thermal_indices <- heat_indices(tas, hurs)
 humidex_and_hi <- heat_indices(tas, hurs, indices = c("humidex", "hi"))
 
 # Bernard WBGT is opt-in and requires dew point. The returned column is WBGT;
